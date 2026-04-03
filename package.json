@@ -26,8 +26,16 @@
     "openai",
     "token-usage"
   ],
-  "author": "",
+  "author": "MoLeft",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MoLeft/codex-usage-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MoLeft/codex-usage-mcp/issues"
+  },
+  "homepage": "https://github.com/MoLeft/codex-usage-mcp#readme",
   "engines": {
     "node": ">=18.18"
   },
