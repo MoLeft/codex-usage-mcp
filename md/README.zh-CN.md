@@ -2,7 +2,7 @@
 
 [English](https://github.com/MoLeft/codex-usage-mcp/blob/main/README.md)
 
-一个适合放进专业开源仓库首页的 Codex 使用量 MCP 服务：读取本地 `~/.codex/sessions/**/*.jsonl`，把零散的 session 日志整理成可查询的 token、成本估算、项目分布、模型分布、session 明细和 rate limit 状态。
+一个用于分析本地 Codex CLI 使用量的 MCP 服务：读取 `~/.codex/sessions/**/*.jsonl`，将分散的 session 日志整理为可查询的 token 用量、成本估算、项目分布、模型分布、session 明细和 rate limit 状态。
 
 [![npm version](https://img.shields.io/npm/v/codex-usage-mcp?style=flat-square)](https://www.npmjs.com/package/codex-usage-mcp)
 [![npm downloads](https://img.shields.io/npm/dm/codex-usage-mcp?style=flat-square)](https://www.npmjs.com/package/codex-usage-mcp)

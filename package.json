@@ -4,7 +4,7 @@
   "description": "MCP server for Codex CLI usage summaries from local session logs.",
   "type": "module",
   "bin": {
-    "codex-usage-mcp": "./dist/cli.js"
+    "codex-usage-mcp": "dist/cli.js"
   },
   "main": "./dist/cli.js",
   "types": "./dist/cli.d.ts",
