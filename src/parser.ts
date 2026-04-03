@@ -3,18 +3,28 @@ import path from "node:path";
 import readline from "node:readline";
 import { estimateCostUsd } from "./pricing.js";
 import { pathMatchesPrefix } from "./path-utils.js";
-import type { ParsedEvent, RateLimitSnapshot, UsageDelta } from "./types.js";
+import type { ParsedEvent, RateLimitHistoryEntry, RateLimitSnapshot, UsageDelta } from "./types.js";
 
 interface ParsedSessionResult {
   events: ParsedEvent[];
   rateLimit: RateLimitSnapshot | null;
+  rateLimitsById: Map<string, RateLimitSnapshot>;
+  rateLimitHistory: RateLimitHistoryEntry[];
+}
+
+export interface ParsedSessionsDirectoryResult {
+  files: string[];
+  events: ParsedEvent[];
+  rateLimit: RateLimitSnapshot | null;
+  rateLimitsById: Map<string, RateLimitSnapshot>;
+  rateLimitHistory: RateLimitHistoryEntry[];
 }
 
 function safeNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function parseTimestamp(value: unknown): Date | null {
+export function parseFlexibleDateTime(value: unknown): Date | null {
   if (typeof value !== "string" || !value.trim()) return null;
   const raw = value.trim();
   if (/[zZ]|[+\-]\d{2}:\d{2}$/.test(raw)) {
@@ -134,7 +144,7 @@ function shouldReplaceRateLimit(existing: RateLimitSnapshot | null, candidate: R
   return candidateObserved > existingObserved;
 }
 
-function choosePrimaryRateLimit(rateLimits: Map<string, RateLimitSnapshot>): RateLimitSnapshot | null {
+export function choosePrimaryRateLimit(rateLimits: Map<string, RateLimitSnapshot>): RateLimitSnapshot | null {
   const codex = rateLimits.get("codex");
   if (codex) return codex;
 
@@ -153,12 +163,24 @@ function choosePrimaryRateLimit(rateLimits: Map<string, RateLimitSnapshot>): Rat
   return values[0] ?? null;
 }
 
-async function parseSessionFile(filePath: string, projectCwdPrefix?: string): Promise<ParsedSessionResult> {
+function sessionIdFromPath(sessionsDir: string, filePath: string): string {
+  const relative = path.relative(sessionsDir, filePath) || path.basename(filePath);
+  return relative.replace(/\\/g, "/");
+}
+
+async function parseSessionFile(
+  sessionsDir: string,
+  filePath: string,
+  projectCwdPrefix?: string
+): Promise<ParsedSessionResult> {
   const stream = fs.createReadStream(filePath, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
+  const sessionId = sessionIdFromPath(sessionsDir, filePath);
+  const sessionFile = filePath;
   const events: ParsedEvent[] = [];
   const rateLimits = new Map<string, RateLimitSnapshot>();
+  const rateLimitHistory: RateLimitHistoryEntry[] = [];
   let currentModel = "unknown";
   let currentCwd: string | null = null;
   let previousTotal: UsageDelta | null = null;
@@ -200,12 +222,18 @@ async function parseSessionFile(filePath: string, projectCwdPrefix?: string): Pr
       }
       if (!parsed || typeof parsed !== "object") continue;
 
-      const timestamp = parseTimestamp(parsed.timestamp);
+      const timestamp = parseFlexibleDateTime(parsed.timestamp);
       if (!timestamp) continue;
 
       const payload = parsed.payload && typeof parsed.payload === "object" ? parsed.payload : {};
       const snapshot = buildRateLimitSnapshot(payload.rate_limits, timestamp);
       if (snapshot) {
+        rateLimitHistory.push({
+          ...snapshot,
+          observedAt: timestamp,
+          sessionId,
+          sessionFile
+        });
         const key = snapshot.limitId ?? "global";
         const existing = rateLimits.get(key) ?? null;
         if (shouldReplaceRateLimit(existing, snapshot)) {
@@ -229,6 +257,8 @@ async function parseSessionFile(filePath: string, projectCwdPrefix?: string): Pr
         timestamp,
         model: currentModel,
         cwd: currentCwd,
+        sessionId,
+        sessionFile,
         delta,
         estimatedCostUsd: cost.estimatedCostUsd,
         pricingSource: cost.pricingSource
@@ -241,7 +271,9 @@ async function parseSessionFile(filePath: string, projectCwdPrefix?: string): Pr
 
   return {
     events,
-    rateLimit: choosePrimaryRateLimit(rateLimits)
+    rateLimit: choosePrimaryRateLimit(rateLimits),
+    rateLimitsById: rateLimits,
+    rateLimitHistory
   };
 }
 
@@ -266,14 +298,22 @@ function listSessionFilesRecursive(dirPath: string): string[] {
 export async function parseSessionsDirectory(
   sessionsDir: string,
   projectCwdPrefix?: string
-): Promise<{ files: string[]; events: ParsedEvent[]; rateLimit: RateLimitSnapshot | null }> {
+): Promise<ParsedSessionsDirectoryResult> {
   const files = listSessionFilesRecursive(sessionsDir);
   const allEvents: ParsedEvent[] = [];
   const rateLimits = new Map<string, RateLimitSnapshot>();
+  const rateLimitHistory: RateLimitHistoryEntry[] = [];
 
   for (const file of files) {
-    const parsed = await parseSessionFile(file, projectCwdPrefix);
+    const parsed = await parseSessionFile(sessionsDir, file, projectCwdPrefix);
     allEvents.push(...parsed.events);
+    rateLimitHistory.push(...parsed.rateLimitHistory);
+    for (const [key, snapshot] of parsed.rateLimitsById.entries()) {
+      const existing = rateLimits.get(key) ?? null;
+      if (shouldReplaceRateLimit(existing, snapshot)) {
+        rateLimits.set(key, snapshot);
+      }
+    }
     if (parsed.rateLimit) {
       const key = parsed.rateLimit.limitId ?? "global";
       const existing = rateLimits.get(key) ?? null;
@@ -284,9 +324,12 @@ export async function parseSessionsDirectory(
   }
 
   allEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  rateLimitHistory.sort((a, b) => a.observedAt.getTime() - b.observedAt.getTime());
   return {
     files,
     events: allEvents,
-    rateLimit: choosePrimaryRateLimit(rateLimits)
+    rateLimit: choosePrimaryRateLimit(rateLimits),
+    rateLimitsById: rateLimits,
+    rateLimitHistory
   };
 }

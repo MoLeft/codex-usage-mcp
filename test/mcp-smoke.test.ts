@@ -26,8 +26,11 @@ describe("MCP smoke", () => {
         "get_current_5h_usage",
         "get_current_week_usage",
         "get_project_usage",
+        "get_rate_limit_status",
         "get_recent_usage_events",
-        "get_usage_overview"
+        "get_usage_breakdown",
+        "get_usage_overview",
+        "get_usage_range"
       ]);
 
       const result = await client.callTool({
@@ -52,6 +55,25 @@ describe("MCP smoke", () => {
       expect(typeof structured?.current5h?.totalTokens).toBe("number");
       expect((structured?.current5h?.totalTokens ?? -1)).toBeGreaterThanOrEqual(0);
       expect(structured?.topProjects?.length).toBe(2);
+
+      const rangeResult = await client.callTool({
+        name: "get_usage_range",
+        arguments: {
+          sessionsDir: path.resolve("test/fixtures/sessions"),
+          start: "2026-04-02 13:00:00",
+          end: "2026-04-02 15:00:00",
+          limit: 5
+        }
+      });
+      const rangeStructured = rangeResult.structuredContent as
+        | {
+            total?: { totalTokens?: number; calls?: number };
+            topModels?: Array<{ model?: string; totalTokens?: number }>;
+          }
+        | undefined;
+      expect(rangeStructured?.total?.totalTokens).toBe(290);
+      expect(rangeStructured?.total?.calls).toBe(3);
+      expect(rangeStructured?.topModels?.length).toBeGreaterThan(0);
     } finally {
       await transport.close();
     }

@@ -1,6 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { buildUsageSummary } from "./summary.js";
+import {
+  buildRateLimitStatus,
+  buildRecentUsageEvents,
+  buildUsageBreakdown,
+  buildUsageRange,
+  buildUsageSummary
+} from "./summary.js";
+import type { RateLimitHistoryEntry, RateLimitSnapshot } from "./types.js";
 
 function asText(value: unknown): string {
   return JSON.stringify(value, null, 2);
@@ -9,6 +16,59 @@ function asText(value: unknown): string {
 function summaryLine(parts: Array<string | number | null | undefined>): string {
   return parts.filter((part) => part !== null && part !== undefined && part !== "").join(" | ");
 }
+
+function formatLocalDateTime(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+}
+
+function serializeRateLimit(snapshot: RateLimitSnapshot | null): Record<string, unknown> | null {
+  if (!snapshot) return null;
+  return {
+    limitId: snapshot.limitId,
+    limitName: snapshot.limitName,
+    observedAt: snapshot.observedAt ? formatLocalDateTime(snapshot.observedAt) : null,
+    usedPercent: snapshot.usedPercent,
+    windowMinutes: snapshot.windowMinutes,
+    resetsAt: snapshot.resetsAt ? formatLocalDateTime(snapshot.resetsAt) : null,
+    remainingSeconds: snapshot.remainingSeconds,
+    scope: snapshot.scope
+  };
+}
+
+function serializeRateLimitHistory(entry: RateLimitHistoryEntry): Record<string, unknown> {
+  return {
+    limitId: entry.limitId,
+    limitName: entry.limitName,
+    observedAt: formatLocalDateTime(entry.observedAt),
+    usedPercent: entry.usedPercent,
+    windowMinutes: entry.windowMinutes,
+    resetsAt: entry.resetsAt ? formatLocalDateTime(entry.resetsAt) : null,
+    remainingSeconds: entry.remainingSeconds,
+    scope: entry.scope,
+    sessionId: entry.sessionId,
+    sessionFile: entry.sessionFile
+  };
+}
+
+const dateRangePresetSchema = z.enum([
+  "last_1h",
+  "last_24h",
+  "last_7d",
+  "today",
+  "yesterday",
+  "this_week",
+  "last_week",
+  "this_month",
+  "last_month"
+]);
+
+const sortBySchema = z.enum(["totalTokens", "calls", "estimatedCostUsd"]);
 
 export function createServer(): McpServer {
   const server = new McpServer({
@@ -39,7 +99,7 @@ export function createServer(): McpServer {
           ...summary.currentWeek.total,
           estimatedCostUsd: includeCosts ? summary.currentWeek.total.estimatedCostUsd : null
         },
-        rateLimit: includeRateLimits ? summary.rateLimit : null,
+        rateLimit: includeRateLimits ? serializeRateLimit(summary.rateLimit) : null,
         topProjects: summary.projects.slice(0, topProjects).map((project) => ({
           ...project,
           estimatedCostUsd: includeCosts ? project.estimatedCostUsd : null
@@ -86,8 +146,9 @@ export function createServer(): McpServer {
         total: summary.current5h.total,
         bySlot: includeSlots ? summary.current5h.bySlot : [],
         byModel: includeModels ? summary.current5h.byModel : [],
-        rateLimit: summary.rateLimit,
-        metrics: summary.metrics
+        rateLimit: serializeRateLimit(summary.rateLimit),
+        metrics: summary.metrics,
+        source: summary.source
       };
 
       return {
@@ -122,7 +183,8 @@ export function createServer(): McpServer {
         range: summary.currentWeek.range,
         total: summary.currentWeek.total,
         byDate: includeByDate ? summary.currentWeek.byDate : [],
-        byModel: includeByModel ? summary.currentWeek.byModel : []
+        byModel: includeByModel ? summary.currentWeek.byModel : [],
+        source: summary.source
       };
 
       return {
@@ -148,7 +210,7 @@ export function createServer(): McpServer {
     {
       sessionsDir: z.string().optional(),
       limit: z.number().int().min(1).max(200).default(20),
-      sortBy: z.enum(["totalTokens", "calls", "estimatedCostUsd"]).default("totalTokens"),
+      sortBy: sortBySchema.default("totalTokens"),
       projectCwdPrefix: z.string().optional()
     },
     async ({ sessionsDir, limit, sortBy, projectCwdPrefix }) => {
@@ -160,7 +222,8 @@ export function createServer(): McpServer {
       });
 
       const payload = {
-        projects: projects.slice(0, limit)
+        projects: projects.slice(0, limit),
+        source: summary.source
       };
 
       return {
@@ -182,16 +245,34 @@ export function createServer(): McpServer {
 
   server.tool(
     "get_recent_usage_events",
-    "Get the latest Codex usage events, useful for investigating recent spikes or finding which project/model consumed tokens most recently.",
+    "Get recent or filtered Codex usage events, with optional time/model/session filters for debugging spikes and attribution.",
     {
       sessionsDir: z.string().optional(),
       limit: z.number().int().min(1).max(200).default(50),
-      projectCwdPrefix: z.string().optional()
+      projectCwdPrefix: z.string().optional(),
+      start: z.string().optional(),
+      end: z.string().optional(),
+      preset: dateRangePresetSchema.optional(),
+      model: z.string().optional(),
+      session: z.string().optional(),
+      sortOrder: z.enum(["desc", "asc"]).default("desc")
     },
-    async ({ sessionsDir, limit, projectCwdPrefix }) => {
-      const summary = await buildUsageSummary({ sessionsDir, projectCwdPrefix });
+    async ({ sessionsDir, limit, projectCwdPrefix, start, end, preset, model, session, sortOrder }) => {
+      const result = await buildRecentUsageEvents({
+        sessionsDir,
+        limit,
+        projectCwdPrefix,
+        start,
+        end,
+        preset,
+        model,
+        session,
+        sortOrder
+      });
       const payload = {
-        events: summary.recentEvents.slice(0, limit)
+        range: result.range,
+        source: result.source,
+        events: result.events
       };
 
       return {
@@ -200,8 +281,188 @@ export function createServer(): McpServer {
             type: "text",
             text:
               `${summaryLine([
-                `events=${Math.min(limit, summary.recentEvents.length)}`,
-                projectCwdPrefix ? `filter=${projectCwdPrefix}` : null
+                `events=${result.events.length}`,
+                `range=${result.range.start}..${result.range.end}`,
+                model ? `model=${model}` : null,
+                session ? `session=${session}` : null,
+                projectCwdPrefix ? `filter=${projectCwdPrefix}` : null,
+                `order=${sortOrder}`
+              ])}\n\n${asText(payload)}`
+          }
+        ],
+        structuredContent: payload
+      };
+    }
+  );
+
+  server.tool(
+    "get_usage_range",
+    "Get Codex usage for an arbitrary time range with optional project/model filters, time-series buckets, and top project/model breakdowns.",
+    {
+      sessionsDir: z.string().optional(),
+      start: z.string().optional(),
+      end: z.string().optional(),
+      preset: dateRangePresetSchema.optional(),
+      projectCwdPrefix: z.string().optional(),
+      model: z.string().optional(),
+      includeSeries: z.boolean().default(true),
+      bucketMinutes: z.number().int().min(1).max(1440).optional(),
+      includeTopProjects: z.boolean().default(true),
+      includeTopModels: z.boolean().default(true),
+      limit: z.number().int().min(1).max(200).default(20)
+    },
+    async ({
+      sessionsDir,
+      start,
+      end,
+      preset,
+      projectCwdPrefix,
+      model,
+      includeSeries,
+      bucketMinutes,
+      includeTopProjects,
+      includeTopModels,
+      limit
+    }) => {
+      const result = await buildUsageRange({
+        sessionsDir,
+        start,
+        end,
+        preset,
+        projectCwdPrefix,
+        model,
+        includeSeries,
+        bucketMinutes,
+        includeTopProjects,
+        includeTopModels,
+        limit
+      });
+      const payload = {
+        range: result.range,
+        total: result.total,
+        series: result.series,
+        topProjects: result.topProjects,
+        topModels: result.topModels,
+        source: result.source,
+        metrics: result.metrics
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `${summaryLine([
+                `range=${result.range.start}..${result.range.end}`,
+                `tokens=${result.total.totalTokens}`,
+                `calls=${result.total.calls}`,
+                `projects=${result.topProjects.length}`,
+                `models=${result.topModels.length}`
+              ])}\n\n${asText(payload)}`
+          }
+        ],
+        structuredContent: payload
+      };
+    }
+  );
+
+  server.tool(
+    "get_usage_breakdown",
+    "Get Codex usage broken down by project, model, session, or date across an arbitrary time range.",
+    {
+      sessionsDir: z.string().optional(),
+      start: z.string().optional(),
+      end: z.string().optional(),
+      preset: dateRangePresetSchema.optional(),
+      dimension: z.enum(["project", "model", "session", "date"]),
+      projectCwdPrefix: z.string().optional(),
+      model: z.string().optional(),
+      sortBy: sortBySchema.default("totalTokens"),
+      limit: z.number().int().min(1).max(200).default(20),
+      includeUnknown: z.boolean().default(false)
+    },
+    async ({ sessionsDir, start, end, preset, dimension, projectCwdPrefix, model, sortBy, limit, includeUnknown }) => {
+      const result = await buildUsageBreakdown({
+        sessionsDir,
+        start,
+        end,
+        preset,
+        dimension,
+        projectCwdPrefix,
+        model,
+        sortBy,
+        limit,
+        includeUnknown
+      });
+      const payload = {
+        range: result.range,
+        dimension: result.dimension,
+        rows: result.rows,
+        total: result.total,
+        source: result.source
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `${summaryLine([
+                `dimension=${dimension}`,
+                `rows=${result.rows.length}`,
+                `range=${result.range.start}..${result.range.end}`,
+                `sortBy=${sortBy}`
+              ])}\n\n${asText(payload)}`
+          }
+        ],
+        structuredContent: payload
+      };
+    }
+  );
+
+  server.tool(
+    "get_rate_limit_status",
+    "Get current Codex rate-limit status, all discovered limit snapshots, and optional historical rate-limit observations.",
+    {
+      sessionsDir: z.string().optional(),
+      includeAllLimits: z.boolean().default(true),
+      includeHistory: z.boolean().default(false),
+      historyLimit: z.number().int().min(1).max(500).default(50),
+      limitId: z.string().optional(),
+      start: z.string().optional(),
+      end: z.string().optional(),
+      preset: dateRangePresetSchema.optional()
+    },
+    async ({ sessionsDir, includeAllLimits, includeHistory, historyLimit, limitId, start, end, preset }) => {
+      const result = await buildRateLimitStatus({
+        sessionsDir,
+        includeAllLimits,
+        includeHistory,
+        historyLimit,
+        limitId,
+        start,
+        end,
+        preset
+      });
+      const payload = {
+        primary: serializeRateLimit(result.primary),
+        limits: result.limits.map(serializeRateLimit),
+        history: result.history.map(serializeRateLimitHistory),
+        range: result.range,
+        source: result.source
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `${summaryLine([
+                `primary=${result.primary?.limitId ?? "none"}`,
+                `limits=${result.limits.length}`,
+                includeHistory ? `history=${result.history.length}` : null,
+                limitId ? `limitId=${limitId}` : null,
+                result.range ? `range=${result.range.start}..${result.range.end}` : null
               ])}\n\n${asText(payload)}`
           }
         ],
