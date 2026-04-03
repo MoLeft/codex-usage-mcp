@@ -4,7 +4,7 @@
 
 **Production-friendly MCP server for analyzing local Codex CLI token usage, costs, projects, sessions, and rate limits.**
 
-[简体中文](./md/README.zh-CN.md)
+[简体中文](https://github.com/MoLeft/codex-usage-mcp/blob/main/md/README.zh-CN.md)
 
 [![npm version](https://img.shields.io/npm/v/codex-usage-mcp?style=flat-square)](https://www.npmjs.com/package/codex-usage-mcp)
 [![npm downloads](https://img.shields.io/npm/dm/codex-usage-mcp?style=flat-square)](https://www.npmjs.com/package/codex-usage-mcp)

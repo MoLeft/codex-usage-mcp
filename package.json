@@ -10,6 +10,7 @@
   "types": "./dist/cli.d.ts",
   "files": [
     "dist",
+    "md",
     "README.md",
     "LICENSE"
   ],
